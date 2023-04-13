@@ -1,0 +1,842 @@
+---
+title: "R bootcamp - suicide"
+author: "Eva-Maria Bonin"
+date: "Last edited `r format(Sys.time(), '%A %d/%m/%Y')`"
+output:
+  pdf_document:
+    toc: yes
+  html_document:
+    toc: yes
+    number_sections: yes
+    theme: cosmo
+header-includes:
+- \usepackage{pdflscape}
+- \newcommand{\blandscape}{\begin{landscape}}
+- \newcommand{\elandscape}{\end{landscape}}
+---
+
+\newpage
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+
+```{r libraries, include = FALSE}
+
+
+# # Define a vector of package names to check for and install if needed
+# packages <- c("wbstats", "dplyr", "reshape", "tidyr", "countrycode", "tidyverse", "ggplot2", "expss", "writexl", "readxl", "imputeTS")
+# 
+# # Loop over each package and check if it's installed
+# for (package in packages) {
+#   if (!require(package)) {
+#     install.packages(package)
+#   }
+# }
+
+
+library(reshape)
+library(countrycode)
+library(stringr)
+library(wbstats)
+library(dplyr)
+library(reshape)
+library(tidyr)
+library(countrycode)
+library(tidyverse)
+library(expss)
+library(writexl)
+library(readxl)
+library(imputeTS)
+library(tidyverse)
+library(naniar)
+library(ggplot2)
+library(visdat)
+library(lubridate)
+library(zoo)
+library(BBmisc)
+library(tidyverse)
+library(table1)
+library(hrbrthemes)
+library(plotly)
+library(webshot)
+library(fixest)
+library(modelsummary)
+library(stats)
+library(rworldmap)
+library(RColorBrewer)
+
+```
+
+
+# Introduction
+
+Suicide is a significant public health issue globally, with an estimated 800,000 deaths annually.^[World Health Organization. (2021). Suicide. https://www.who.int/news-room/fact-sheets/detail/suicide] Suicide is the second leading cause of death among individuals aged 15 to 29 years old. Mental health issues, including depression and substance abuse, are significant risk factors for suicide, and early intervention and treatment for these conditions can help prevent suicidal behavior.
+
+Certain groups are more vulnerable to suicide, including individuals who have previously attempted suicide, individuals with a family history of suicide, and those who have experienced trauma or abuse. Men are also more likely to die by suicide than women, with suicide rates for men consistently higher in most countries.
+
+There are also significant economic factors that contribute to suicide rates, such as poverty, unemployment, and income inequality. Studies have shown that economic recession and job loss can lead to an increase in suicide rates. Social isolation and lack of access to healthcare resources can also contribute to the risk of suicide.
+
+Switzerland has a relatively high suicide rate, with approximately 1,200 suicides per year. Suicide rates in Switzerland are highest among men, individuals aged 45 to 54 years old, and individuals living in rural areas. 
+
+In this report, I explore data from the World Bank and the Global Burden of Disease Study to look at global trends in suicide rates, and compare the case of Switzerland to two countries with a higher and a lower suicide rate for males.
+
+
+# Data sources
+
+I used data on suicide rates, population and economic indicators from the [World Bank](https://databank.worldbank.org/reports.aspx?source=2&series=SH.STA.SUIC.P5&country=#) (WB), and data on mental health problems from the [Global Burden of Disease study](https://ghdx.healthdata.org/gbd-2019) (GBD).
+
+# Pre-processing
+## Obtaining and merging data files
+I downloaded selected indicators (suicide rate, economic indicators, population) from the WB data using the *wb_data* function, and obtained the GBD data by using the web tool to select and download the data.
+
+
+```{r wb, include=FALSE}
+
+#Original code to generate the World Bank dataset:
+# world_bank <- wb_data(country = "countries_only",
+#                       indicator = c("SP.POP.TOTL", "SH.STA.SUIC.P5" , "SH.STA.SUIC.FE.P5" , "SH.STA.SUIC.MA.P5" , "SE.COM.DURS" , "NY.GDP.PCAP.KD" , "SL.UEM.1524.ZS" , "SL.UEM.1524.MA.ZS" , "SL.UEM.1524.FE.ZS" , "SL.UEM.TOTL.ZS" , "SL.UEM.TOTL.MA.ZS" , "SL.UEM.TOTL.FE.ZS"),
+#                       mrv = 5,
+#                       gapfill = TRUE) %>% 
+#   filter(date >= 2017)
+
+# I saved the file locally because I was having trouble accessing the web resource intermittently.
+# write_xlsx(world_bank,"../data/world_bank.xlsx")
+
+# Loading World Bank data from local file
+world_bank <- read_excel("../data/world_bank.xlsx", na = "")
+
+# Changing variable names
+varnames <- c("iso2c", "iso3c", "country", "year", "gdp_pc", "edu", "sui_female", "sui_male", "sui", "unem_y_female", "unem_y_male", "unem_y", "unem_t_female", "unem_t_male", "unem_t", "pop_t")
+colnames(world_bank) <- varnames
+
+# World Bank data to long as this will make merging easier down the line
+tmp_wb_long <- world_bank %>%
+  pivot_longer(cols = !c(country, iso3c, iso2c, year),
+               names_to = "indicator",
+               values_to = "value"
+  )
+
+# Defining missing values as NA
+tmp_wb_long[tmp_wb_long == 'NULL'] <- NA
+
+```
+Next, I created a column to capture the gender associated with an indicator value and removed the string indicating gender from the indicator descriptions. This allowed me to structure the data in a convenient way for grouping by gender later on.
+
+```{r, echo = TRUE}
+
+# Creating gender column in WB data
+tmp_wb_long <- tmp_wb_long %>%
+  mutate(sex = case_when(
+    str_detect(indicator, "female") ~ "Female",
+    str_detect(indicator, "male") ~ "Male"),
+    sex = ifelse(is.na(sex), "Both", sex))
+
+# Remove "male" and "female" from indicator descriptions
+tmp_wb_long$indicator <- gsub("_male","",as.character(tmp_wb_long$indicator))
+tmp_wb_long$indicator <- gsub("_female","",as.character(tmp_wb_long$indicator))
+```
+```{r, echo = FALSE}
+# dropping ISO2C column; pretty sure there's an easier way.
+tmp_wb_long <- subset(tmp_wb_long, select = -c(iso2c))
+```
+
+Similarly, the GBD data was processed and structured to match the WB data, ready for merging.
+
+```{r gbd, echo=FALSE, include=FALSE}
+
+
+
+# Loading GBD data that was previously downloaded
+gbd <- read.csv("../data/gbd/gbd_clean.csv", header = TRUE, sep = ",", na.strings = NA)
+
+# Dropping columns we don't need
+gbd <- gbd[, -c(1, 2, 3, 5, 7, 8, 9, 11, 12, 15, 16)]
+
+# insert column with country codes (ISO3), based on the variable country.name
+gbd <- gbd %>%
+  mutate(iso3c = countrycode(location_name,"country.name", "wb"))
+
+# Warning message:
+#   There was 1 warning in `mutate()`.
+# b9 In argument: `ISO3C = countrycode(location_name, "country.name", "wb")`.
+# Caused by warning in `countrycode_convert()`:
+#   ! Some values were not matched unambiguously: Cook Islands, Niue, Tokelau, Turkiye 
+
+# Manually adding ISO country code for these:
+gbd$iso3c[gbd$location_name == "Cook Islands"] <- "COK"
+gbd$iso3c[gbd$location_name == "Niue"] <- "NIU"
+gbd$iso3c[gbd$location_name == "Tokelau"] <- "TKL"
+gbd$iso3c[gbd$location_name == "Turkiye"] <- "TUR"
+
+#check to see if there are any cases missing in ISO3C
+filter(gbd, is.na(iso3c))
+# is now complete
+
+
+# Drop data before 2017 because there is a large amount of missing data
+gbd <- gbd[gbd$year >= 2017, ]
+
+# Dropping rows relating to sexual voilence because thta appears to be zero throughout.
+gbd <- gbd[gbd$cause_name != "Sexual violence", ] 
+
+# Renaming columns
+tmp_gbd_oldnames <- colnames(gbd)
+tmp_gbd_oldnames
+tmp_gbd_newnames <- c("country", "sex", "indicator", "year", "value", "iso3c" )
+colnames(gbd) <- tmp_gbd_newnames
+
+```
+
+The datasets were merged and a variable for the continent included.
+
+```{r merge, echo = FALSE}
+
+# Merging
+tmp_wb_gbd_long <- rbind(tmp_wb_long, gbd)
+tmp_wb_gbd_long[tmp_wb_gbd_long == 'NULL'] <- NA
+
+
+# Generating wide version of dataset
+tmp_wb_gbd_wide <- tmp_wb_gbd_long %>%
+  pivot_wider(names_from = "indicator",
+              values_from = "value"
+              )
+
+# Adding in continent
+continent <- read.csv("../data/continents.csv") 
+tmp_wb_gbd_wide <- left_join(tmp_wb_gbd_wide, continent, by = "iso3c")
+
+```
+
+During the initial cleaning, I generated a list of all unique country names in the combined dataset to check for duplicates caused by variance in spelling. These issues were resolved by manually modifying country names in the GBD datafile, to reflect the names used in the WB data.
+
+```{r country_list, echo = FALSE}
+
+# tmp_countries_wb_gbd <- as.list(unique(tmp_wb_gbd_wide[c("country")]))
+# tmp_countries_wb_gbd <- lapply(tmp_countries_wb_gbd, sort, decreasing = FALSE)
+# tmp_countries_wb_gbd <- as.data.frame(tmp_countries_wb_gbd)
+
+# write_xlsx(tmp_countries_wb_gbd, "../outputs/countries_combined.xlsx")
+
+# The following were changed manually in the gbd dataset to reflect spelling in the wb dataset:
+
+# Bahamas
+# Bahamas, The
+#
+# Bolivia
+# Bolivia (Plurinational State of)
+# 
+# Congo
+# Congo, Dem. Rep.
+# Congo, Rep.
+# Democratic Republic of the Congo
+# 
+# Cote d'Ivoire
+# CC4te d'Ivoire
+# 
+#
+# Egypt
+# Egypt, Arab Rep.
+#
+# Gambia
+# Gambia, The
+#
+# Iran (Islamic Republic of)
+# Iran, Islamic Rep.
+#
+# Kyrgyz Republic
+# Kyrgyzstan
+# 
+# Lao PDR
+# Lao People's Democratic Republic
+# 
+# Micronesia (Federated States of)
+# Micronesia, Fed. Sts.
+#
+# Slovak Republic
+# Slovakia
+#
+# Turkey
+# Turkiye
+#
+# United States
+# United States of America
+#
+# Venezuela (Bolivarian Republic of)
+# Venezuela, RB
+# 
+# Viet nam
+# Vietnam
+#
+# Yemen
+# Yemen, Rep.
+
+```
+I renamed the variables in the wide dataset to ensure consistency between data coming from the WB and GBD datasets.
+
+```{r rename, echo = FALSE}
+
+
+# Renaming Variables so all are in line
+varnames_old <- colnames(tmp_wb_gbd_wide)
+# varnames_old
+varnames_new <- c("iso3c", "country", "year","sex","gdp_pc","edu","sui","unem_y","unem_t","pop_t","alc", "drug","depr","sh", "continent", "region")
+colnames(tmp_wb_gbd_wide) <- varnames_new
+
+
+```
+## Addressing missing data
+
+Now the data were ready to address missing data, either by removing unusable rows or by performing imputation. This consisted of three different approaches:
+
+1. GDP per capita, years of compulsory education and total population were available overall, but not by sex. This overall value was used to fill missing values in "male" and "female".
+2. Countries with no data at all on suicide rates were removed from the dataset.
+3. For all over variables, missing data were replaced by manifestation of the *sex* variable. In a first step, the mean for the country and year was used to replace missing values. Where missing values remained, these were replaced by the mean for the country overall, then for the region, and where missing values still remained, they were replaced by the mean for the continent.
+
+
+```{r imputation1, echo = TRUE}
+
+# First step: Replace missing values by male and female with overall value
+
+## Filter out values for sex == "Both"
+tmp_wb_gbd_wide.both <- tmp_wb_gbd_wide %>% 
+  filter(sex == "Both") %>% 
+  select(!sex)
+
+## Join the data, making sure that country and year are matched correctly. 
+tmp_wb_gbd_wide.tmp2 <- 
+  left_join(x = tmp_wb_gbd_wide, y = tmp_wb_gbd_wide.both, 
+            by = c("country", "year"),
+            suffix = c("", ".y"))
+
+
+# Replacing missing data in original variable with overall value.
+tmp_wb_gbd_wide <- tmp_wb_gbd_wide.tmp2 %>% 
+  plyr::mutate(sui = coalesce(sui, sui.y),
+               gdp_pc = coalesce(gdp_pc, gdp_pc.y), 
+               edu = coalesce(edu, edu.y), 
+               pop_t = coalesce(pop_t, pop_t.y))
+
+
+# Remove columns with .y suffix
+columns_to_remove <- grep("\\.y", names(tmp_wb_gbd_wide))
+tmp_wb_gbd_wide <- tmp_wb_gbd_wide[,-columns_to_remove]
+
+```
+
+
+```{r, echo = FALSE}
+# list of countries
+tmp_countries_wb_gbd <- as.list(unique(tmp_wb_gbd_wide[c("country")]))
+
+num_count <- length(tmp_countries_wb_gbd[[1]])
+# num_count
+# we have 230 countries
+```
+
+After this operation, we have data for `r num_count` countries.
+
+
+
+```{r imputation2, echo = TRUE}
+
+# Second step: Drop countries with no data on suicide rates
+# Counting missing values on suicide rates by country
+
+tmp_na_count <- tmp_wb_gbd_wide %>%
+  group_by(country) %>%
+  dplyr::summarize(count_na = sum(is.na(sui)))
+
+# Count the occurrences of each value in count_na
+tmp_counts <- table(tmp_na_count$count_na)
+
+# create a bar plot of the counts
+barplot(tmp_counts, xlab = "Number of NA Values", ylab = "Count", main = "Counts of NA Values")
+
+```
+
+After some investigation to confirm that these countries really had no data on the suicide rate, I generated a list of countries that were missing 9 or more instances of the suicide rate and dropped them from the dataset.
+
+```{r, echo = FALSE, include = FALSE}
+
+# Subset na_count to include only rows where count_na[2] is > 9
+tmp_subset <- tmp_na_count[tmp_na_count$count_na > 9, ]
+
+# Print the values of count_na[1] in the subset
+print(tmp_subset)
+
+
+# Remove countries with no data on suicide rates
+# Create a vector of values to exclude
+tmp_exclude_vec <- as.character(tmp_subset[[1]])
+#tmp_exclude_vec
+
+# Subset the data frame to exclude rows where the value in the column is in the exclude_vec
+tmp_wb_gbd_wide <- subset(tmp_wb_gbd_wide, !country %in% tmp_exclude_vec)
+
+tmp_test_countries <- as.list(unique(tmp_wb_gbd_wide[c("country")]))
+country_count_final <- length(tmp_test_countries[[1]])
+
+```
+We now have `r country_count_final` countries in the dataset.
+
+Prior to performing the imputation in the third and final step, I visualised the distribution of missing values using the *vis_miss* library.
+
+
+```{r vismiss}
+
+# Group the data by country
+tmp_df_by_country <- tmp_wb_gbd_wide %>%
+  group_by(country, sex) %>%
+  arrange(year)
+
+# Create a heatmap of missing data using vis_miss()
+vis_miss(tmp_df_by_country)
+
+```
+
+Most data are missing in the economic indicators and mental health data obtained from the GBD dataset.
+
+Data were then imputed to address this.
+
+```{r impute3}
+
+# Impute missing values using median by group (country, year).
+
+na1 <- tmp_wb_gbd_wide %>% is.na() %>% colSums()
+
+tmp_df_imputed <- tmp_wb_gbd_wide %>%
+  group_by(country, year) %>%
+  mutate_if(is.numeric, na.aggregate, FUN = median) %>%
+  ungroup()
+
+na2 <- tmp_df_imputed %>% is.na() %>% colSums()
+
+
+```
+
+Before the first imputation, there were `r sum(na1)` missing values in the dataset. After the imputation, there were `r sum(na2)` missing values in the dataset.
+
+
+```{r impute4}
+
+# By country only
+
+tmp_df_imputed2 <- tmp_df_imputed %>%
+  group_by(country) %>%
+  mutate_if(is.numeric, na.aggregate, FUN = median) %>%
+  ungroup()
+
+na3 <- tmp_df_imputed2 %>% is.na() %>% colSums()
+
+```
+
+After the imputation, there were `r sum(na3)` missing values in the dataset.
+
+
+```{r impute5}
+
+# Repeating imputation by region
+
+tmp_df_imputed3 <- tmp_df_imputed2 %>%
+  group_by(region) %>%
+  mutate_if(is.numeric, na.aggregate, FUN = median) %>%
+  ungroup()
+
+na4 <- tmp_df_imputed3 %>% is.na() %>% colSums()
+
+```
+
+After the imputation, there were `r sum(na4)` missing values in the dataset.
+
+
+```{r impute6}
+# And finally by continent
+
+tmp_df_imputed4 <- tmp_df_imputed3 %>%
+  group_by(continent) %>%
+  mutate_if(is.numeric, na.aggregate, FUN = median) %>%
+  ungroup()
+
+na5 <- tmp_df_imputed4 %>% is.na() %>% colSums()
+
+```
+
+After the final imputation, there were `r sum(na5)` missing values in the dataset.
+
+
+## Final datasets
+
+The final dataset was saved in wide format (*suicide_final*) and in long format (*suicide_final_long*). Final preparations included 
+
+* Adding a variable of *date* type, based on the variable *year*, to facilitate the use of time series functions;
+* Adding a calculated column showing total estimated deaths from suicide (*deaths*);
+* Labelling variables;
+
+
+```{r fin_prep, echo = FALSE, include = FALSE}
+
+# Final preparations
+suicide_final <- tmp_df_imputed4
+
+# Create year1 variable in date type to allow for time series analysis
+
+suicide_final$year1 <- ymd(paste0(suicide_final$year, "-01-01"))
+str(suicide_final$year1)
+
+# Adding calculated column: total suicide deaths.
+# Assuming population is 50/50 male / female.
+suicide_final <- suicide_final %>%
+  mutate(deaths = case_when(
+    sex %in% c("Male", "Female") ~ sui * pop_t/100000 * 0.5,
+    TRUE ~ sui * pop_t/100000
+  ))
+
+```
+
+```{r long, echo = FALSE}
+
+# Generating long dataset
+indicators <- c("gdp_pc", "edu", "sui_female", "sui_male", "sui", "deaths", "unem_y_female", "unem_y_male", "unem_y", "unem_t_female", "unem_t_male", "unem_t", "pop_t")
+suicide_final_long <- suicide_final %>%
+  pivot_longer(cols = c(5:14),
+               names_to = "indicator",
+               values_to = "value") 
+
+
+# Labelling wide dataset
+suicide_final = apply_labels(suicide_final,
+                             iso3c = "ISO3C",
+                             country = "Country",
+                             year = "Year",
+                             gdp_pc = "GDP per capita (constant 2015 US$)",
+                             edu = "Compulsory education, duration (years)",
+                             sui = "Suicide mortality rate (per 100,000 population)",
+                             unem_y = "Unemployment, youth total (% of total labor force ages 15-24) (modeled ILO estimate)" ,
+                             unem_t = "Unemployment, total (% of total labor force) (modeled ILO estimate)",
+                             pop_t = "Total population",
+                             alc = "Alcohol abuse",
+                             drug = "Drug abuse",
+                             sh = "Self harm",
+                             sex = "Sex",
+                             depr = "Depression",
+                             continent = "Continent",
+                             region = "Sub-region",
+                             deaths = "Deaths by suicide",
+                             year1 = "Year in date format")
+
+# Labelling long dataset
+suicide_final_long = apply_labels(suicide_final_long,
+                                  iso3c = "ISO3C",
+                                  country = "Country",
+                                  year = "Year",
+                                  sex = "Sex",
+                                  depr = "Depression",
+                                  continent = "Continent",
+                                  region = "Sub-region",
+                                  year1 = "Year in date format",
+                                  indicator = "Indicator",
+                                  values = "Value"
+                                  )
+
+```
+
+Finally, I wrote the data to disk to preserve it.
+
+
+```{r disk, echo = FALSE}
+
+write_xlsx(suicide_final,"../data/suicide_final.xlsx")
+write_xlsx(suicide_final_long,"../data/suicide_final_long.xlsx")
+
+# Removing temporary objects
+rm(list = ls()[grep("^tmp_", ls())])
+
+```
+
+
+
+
+# Exploratory data analysis
+
+## Summarising the dataset
+
+An overview of the variables in the dataset is provided using the *table1* function. Note that this is filtered for values that apply to both genders (sex == "Both"), but shows the average of data for all countries and years, by continent. 
+
+\newpage
+\blandscape
+
+
+
+```{r table1, echo = FALSE}
+
+tmp_both <- suicide_final %>% filter(sex == "Both")
+table1 <- table1(~ sui + deaths + pop_t + edu + gdp_pc + unem_y + unem_t + alc + drug + depr + sh | factor(continent), data = tmp_both)
+
+#library(kableExtra)
+#kable(as.data.frame(table1), format = "latex", booktabs = TRUE) %>%
+ #         kable_styling(latex_options = "scale_down")
+
+table1
+
+```
+
+\elandscape
+
+
+## Mapping suicide rates
+
+World maps showing suicide rates by country for 2017 and 2021 were created. A darker colour signifies a higher suicide rate.
+
+
+```{r world_map1, echo = TRUE, warning = FALSE, message = FALSE}
+
+df1 <- suicide_final %>%
+ filter(year == 2017) %>%
+  drop_na()
+data(df1)
+colpal <-  c('#f7fcfd','#e5f5f9','#ccece6','#99d8c9','#66c2a4','#41ae76','#238b45','#006d2c','#00441b')
+sPDF <- joinCountryData2Map(df1, joinCode = "ISO3", nameJoinColumn = "iso3c")
+par(mai=c(0,0,0.2,0),xaxs="i",yaxs="i")
+mapCountryData(sPDF, nameColumnToPlot="sui", mapTitle = "Suicide rates across the world, 2017", colourPalette = colpal)
+
+```
+```{r world_map2, echo = FALSE, warning = FALSE, message = FALSE}
+
+
+df <- suicide_final %>%
+ filter(year == 2021) %>%
+  drop_na()
+data(df)
+colpal <-  c('#f7fcfd','#e5f5f9','#ccece6','#99d8c9','#66c2a4','#41ae76','#238b45','#006d2c','#00441b')
+sPDF <- joinCountryData2Map(df, joinCode = "ISO3", nameJoinColumn = "iso3c")
+par(mai=c(0,0,0.2,0),xaxs="i",yaxs="i")
+mapCountryData(sPDF, nameColumnToPlot="sui", mapTitle = "Suicide rates across the world, 2021", colourPalette = colpal)
+
+
+```
+
+
+To show the top 20 countries with the highest average suicide rates at any point, I calculated the average by country and sex and sort by the mean:
+
+```{r top20, echo = FALSE}
+
+# Filtering
+sui_country_time <- suicide_final %>% 
+  group_by(country, sex) %>% 
+  summarise(mean_sui=mean(sui),
+            .groups = 'drop')
+
+# Sorting
+sui_country_time_sorted <- sui_country_time[order(sui_country_time$mean_sui, decreasing = TRUE),]
+
+print(sui_country_time_sorted, n = 20)
+
+```
+
+We can see that most of the 20 highest values are for males, or are overall rates driven by very high rates for males.
+
+
+```{r males, echo = FALSE, include = FALSE}
+
+# Max only for males
+max_m <- (head(sui_country_time_sorted %>% filter(sex == "Male"), n=1))
+max_m
+# Min only for males
+min_m <- tail(sui_country_time_sorted %>% filter(sex == "Male" & mean_sui > 0), n=1)
+min_m
+# Value for Switzerland
+swiss_m <- sui_country_time_sorted %>% filter(sex == "Male" & country == "Switzerland")
+swiss_m
+
+
+```
+The highest value is for the country of Lesotho, the lowest for the country of Barbados. For comparison, the value for males in Switzerland is . These three countries are chosen for the case study comparisons.
+
+
+## Exlploring data by continent
+
+Due to the many countries in the data set, visual analysis is challenging. An overview is provided by showing the average data by continent.
+
+* A line graph shows trends in suicide rates over time.
+* Box plots for the last 3 years show the distribution of the variable, to give an idea of the variability within continents.
+* A cumulative graph shows total deaths by suicide.
+
+I used the *plotly* package with *ggplot2* to make the graphs more interactive.
+
+```{r continent1, echo = FALSE}
+
+# Summarise suicide data by continent
+
+sui_continent <- suicide_final %>% 
+  group_by(continent, sex, year) %>% 
+  summarise(mean_sui=mean(sui), mean_deaths = mean(deaths),
+            .groups = 'drop')
+
+# Line graph: suicide rates over time
+m_c <- sui_continent %>% ggplot(aes(x=year,y=mean_sui, colour = continent)) +
+  geom_line() +
+    facet_wrap(~sex, scales = "free_y") +
+  ylab("Suicide rate") +
+  xlab("Year") +
+  ggtitle("Suicide rates over time, by continent")
+m_c <- ggplotly(m_c)
+m_c
+
+
+```
+Suicide rates between men and women diverge for every continent. Rates are highest in Europe and Oceania, and lowest in Asia.
+
+```{r continent2, echo = FALSE}
+
+# Box plots, limiting to last three years
+p <- suicide_final %>% filter(sex == "Male", year > 2018) %>%
+  ggplot(aes(x=year, y=sui, fill=continent)) + 
+  geom_boxplot() +
+  facet_wrap(~continent, ncol = 1) +
+  xlab("Year") +
+  ylab("Suicide rate") +
+  ggtitle("Variation in suicide rates by continent, over the last 3 years")
+
+p <- ggplotly(p)
+p
+
+
+```
+There is a lot of variation in suicide rates within continents. Visual inspection of the plots suggests that there are more outliers on those continents that contain more countries. Most distributions do not indicate normality.
+
+
+## Case study Switzerland
+
+In a case study, I compare Switzerland to the countries with the highest and lowest male suicide rates.
+
+
+```{r case1, echo = FALSE}
+
+
+# Creating filtered dataset
+cs_countries <- c("Switzerland", "Lesotho", "Barbados")
+case_study <- suicide_final %>%
+  filter(country %in% cs_countries, sex != "Both")
+
+
+# Comparing men in the three countries
+case1 <- case_study %>% filter(sex == "Male") %>%
+  ggplot(mapping = aes(y = sui, x=year, colour = country)) +
+  geom_line() +
+  ylab("Suicide rate") +
+  xlab("Year") +
+  ggtitle("Suicide rates over time")
+
+case1 <- ggplotly(case1)
+case1
+
+```
+As expected, rates in Lesotho are much higher than in the other countries, and Barbados has rates close to zero.
+
+
+```{r case2, echo = FALSE}
+# Comparing men and women in the three countries
+case2 <- case_study %>%
+  ggplot(mapping = aes(y = sui, x=year, colour = country)) +
+  geom_line() +
+  facet_wrap(~ sex, scales = "free_y")+
+  ylab("Suicide rate") +
+  xlab("Year") +
+  ggtitle("Suicide rates over time")
+
+case2 <- ggplotly(case2)
+case2
+
+```
+While trends for females are steady in all three countries (although at different levels), trends for males appear to be downward. However, it is unclear without further investigation if this could be an artefact of the imputation procedure.
+
+
+
+# Regression models
+
+Given the findings above, does the suicide rate differ over time for males or females? I ran and compared 6 regression models to find out.
+
+1. Regression of suicide rade on *sex*, *year*.
+2. Adding fixed effect variable *country* to see if effects differ by country.
+3. Including economic data such as population, education, GDP and unemployment.
+4. Including mental health data.
+5. Adding a fixed effect for the year to account for time trends in the data.
+6. Removing variables with coefficients that are zero or very close.
+
+I used the *feols* function for all models because it has easy options for fixed effects and clustering, and is compatible with the *modelsummary* and *modelplot* functions I used to visualise the results.
+
+```{r reg, echo = TRUE}
+
+# Simplest model
+reg1 <- suicide_final %>% filter(sex != "Both") %>% feols(sui ~ sex + year)
+
+# Fixed effect by country
+reg2 <- suicide_final %>% filter(sex != "Both") %>% feols(sui ~ sex + year | country)
+
+# Including economic data
+reg3 <- suicide_final %>% filter(sex != "Both") %>% feols(sui ~ sex + year + pop_t + 
+                                                            edu + gdp_pc + unem_y + unem_t | country)
+# Including mental health data
+reg4 <- suicide_final %>% filter(sex != "Both") %>% feols(sui ~ sex + year + pop_t 
+                                                          + edu + gdp_pc + unem_y + unem_t+ 
+                                                            alc + drug + depr + sh | country)
+# 4 plus fixed effect for year
+reg5 <- suicide_final %>% filter(sex != "Both") %>% feols(sui ~ sex + pop_t 
+                                                          + edu + gdp_pc + unem_y + unem_t+ 
+                                                            alc + drug + depr + sh | country + year,
+                                                          cluster = ~ country)
+# 5 minus vars with zero coefficient
+reg6 <- suicide_final %>% filter(sex != "Both") %>% feols(sui ~ sex + 
+                                                          edu + unem_y + unem_t+ 
+                                                            alc + drug + depr + sh | country + year,
+                                                          cluster = ~ country)
+
+```
+
+# Special chapter: modelsummary
+
+To provide an overview of the models and display the most salient results in a way that is both attractive and easy to read, I used the library *modelsummary* to combine results from the six models. I then used *modelplot*
+
+## Overview of models
+
+An overview of the coefficients 
+
+```{r models1, echo = FALSE}
+
+models <- list(reg1, reg2, reg3, reg4, reg5, reg6)
+
+coefs = c("sexMale" = "Male", "year" = "Year", "sexMale year" = "Male * Year", "pop_t" = "Total population", "edu" = "Years compulsory education", "gdp_pc" = "GDP per capita", "unem_y" = "Youth unemployment", "unem_t" = "Total unemployment", "alc" = "Alcohol misuse", "drug" = "Drug misuse", "sh" = "Self harm")
+
+model_summary <- modelsummary(models,
+                              coef_omit = "Intercept",
+                              coef_map = coefs,
+                              gof_omit = "AIC|BIC|RMSE|R2 W|R2 A",
+                              stars = TRUE)
+
+
+model_summary
+```
+There appears to be a negative (but not statistically significant) coefficient on *year*, pointing towards a downward trend in suicide rates. Unemployment, alcohol misuse and self harm are significantly related to suicide rates. Rates for males are higher than for females in all models.
+
+## Model plots
+
+```{r models2, echo = FALSE}
+
+model_plot <- modelplot(models,
+                        coef_map = c("sexMale" = "Male")) +
+  guides(color = guide_legend(reverse = TRUE))
+
+model_plot
+
+```
+The plot shows the coefficient on *Male* and the standard errors. Model 1, surprisingly, shows the smallest standard errors.
+
+
+
+# Conclusions
+
+Suicide continues to be a public health concern across the world. There is a lot of variation in rates between countries, and between and within continents. Men continue to be at higher risk of suicide than women. There may be a downward trend overall, but the fact that much of these data were imputed means that interpretation has to be very cautious.
+
